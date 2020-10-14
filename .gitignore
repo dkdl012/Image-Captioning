@@ -1,0 +1,12 @@
+*.sh
+eval_logs
+ADVANCED.md
+README.md
+LICENSE
+train_logs
+data
+eval_results
+__pycache__
+log
+vis
+pycocoevalcap
