@@ -18,6 +18,9 @@ import argparse
 import misc.utils as utils
 import torch
 
+import logging
+
+
 # Input arguments and options
 parser = argparse.ArgumentParser()
 # Input paths
@@ -31,12 +34,15 @@ opts.add_eval_options(parser)
 
 opt = parser.parse_args()
 
+logger, log_dir = utils.get_logger(model_name=opt.id, log_path='eval_logs')
+
 # Load infos
 with open(opt.infos_path, 'rb') as f:
     infos = utils.pickle_load(f)
 
 # override and collect parameters
-replace = ['input_fc_dir', 'input_att_dir', 'input_box_dir', 'input_label_h5', 'input_json', 'batch_size', 'id']
+replace = ['input_fc_dir', 'input_att_dir', 'input_box_dir', 'input_label_h5', 'input_json', 'batch_size', 'id',
+           'num_cnn', 'use_mrc_feat', 'add_self', 'frc_first']
 ignore = ['start_from']
 
 for k in vars(infos['opt']).keys():
@@ -56,7 +62,6 @@ model.load_state_dict(torch.load(opt.model))
 model.cuda()
 model.eval()
 crit = utils.LanguageModelCriterion()
-
 # Create the Data Loader instance
 if len(opt.image_folder) == 0:
   loader = DataLoader(opt)
@@ -69,15 +74,13 @@ else:
 # So make sure to use the vocab in infos file.
 loader.ix_to_word = infos['vocab']
 
-
 # Set sample options
 opt.datset = opt.input_json
 loss, split_predictions, lang_stats = eval_utils.eval_split(model, crit, loader, 
     vars(opt))
-
-print('loss: ', loss)
+logger.info('loss: {}'.format(loss))
 if lang_stats:
-  print(lang_stats)
+  logger.info(lang_stats)
 
 if opt.dump_json == 1:
     # dump the json

@@ -27,7 +27,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
+import os, sys
 import json
 import argparse
 from random import shuffle, seed
@@ -46,12 +46,13 @@ preprocess = trn.Compose([
         trn.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 from misc.resnet_utils import myResnet
 import misc.resnet as resnet
 
 def main(params):
   net = getattr(resnet, params['model'])()
-  net.load_state_dict(torch.load(os.path.join(params['model_root'],params['model']+'.pth')))
+  # net.load_state_dict(torch.load(os.path.join(params['model_root'],params['model']+'.pth')))
   my_resnet = myResnet(net)
   my_resnet.cuda()
   my_resnet.eval()

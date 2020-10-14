@@ -1,6 +1,6 @@
 # Attention on Attention for Image Captioning
 
-This repository includes the implementation for [Attention on Attention for Image Captioning](https://arxiv.org/abs/1908.06954) (to appear in ICCV 2019 as oral presentation).
+This repository includes the implementation for [Attention on Attention for Image Captioning](https://arxiv.org/abs/1908.06954).
 
 ## Requirements
 
@@ -18,9 +18,13 @@ This repository includes the implementation for [Attention on Attention for Imag
 
 See details in `data/README.md`.
 
+(**notes:** Set `word_count_threshold` in `scripts/prepro_labels.py` to 4 to generate a vocabulary of size 10,369.)
+
 You should also preprocess the dataset and get the cache for calculating cider score for [SCST](https://arxiv.org/abs/1612.00563):
 
-```$ python scripts/prepro_ngrams.py --input_json data/dataset_coco.json --dict_json data/cocotalk.json --output_pkl data/coco-train --split train```
+```bash
+$ python scripts/prepro_ngrams.py --input_json data/dataset_coco.json --dict_json data/cocotalk.json --output_pkl data/coco-train --split train
+```
 ### Start training
 
 ```bash
@@ -38,13 +42,13 @@ $ CUDA_VISIBLE_DEVICES=0 python eval.py --model log/log_aoanet_rl/model.pth --in
 
 ### Performance
 You will get the scores close to below after training under xe loss for 25 epochs:
-```
+```python
 {'Bleu_1': 0.7729384559899702, 'Bleu_2': 0.6163398035383025, 'Bleu_3': 0.4790123137715982, 'Bleu_4': 0.36944349063530374, 'METEOR': 0.2848188431924821, 'ROUGE_L': 0.5729849683867054, 'CIDEr': 1.1842173801790759, 'SPICE': 0.21650786258302354}
 ```
 (**notes:** You can enlarge `--max_epochs` in `train.sh` to train the model for more epochs and improve the scores.)
 
 after training under SCST loss for another 15 epochs, you will get:
-```
+```python
 {'Bleu_1': 0.8054903453672397, 'Bleu_2': 0.6523038976984842, 'Bleu_3': 0.5096621263772566, 'Bleu_4': 0.39140307771618477, 'METEOR': 0.29011216375635934, 'ROUGE_L': 0.5890369750273199, 'CIDEr': 1.2892294296245852, 'SPICE': 0.22680092759866174}
 ```
 

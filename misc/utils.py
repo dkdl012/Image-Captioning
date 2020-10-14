@@ -9,8 +9,12 @@ import numpy as np
 import torch.optim as optim
 import os
 
-import six
-from six.moves import cPickle
+import pickle
+# import six
+# from six.moves import cPickle
+
+import logging
+logger = logging.getLogger()
 
 bad_endings = ['with','in','on','of','a','at','to','for','an','this','his','her','that']
 bad_endings += ['the']
@@ -21,10 +25,11 @@ def pickle_load(f):
     ----------
     f: file-like object
     """
-    if six.PY3:
-        return cPickle.load(f, encoding='latin-1')
-    else:
-        return cPickle.load(f)
+    return pickle.load(f)
+    # if six.PY3:
+    #     return cPickle.load(f, encoding='latin-1')
+    # else:
+    #     return cPickle.load(f)
 
 
 def pickle_dump(obj, f):
@@ -34,10 +39,11 @@ def pickle_dump(obj, f):
     obj: pickled object
     f: file-like object
     """
-    if six.PY3:
-        return cPickle.dump(obj, f, protocol=2)
-    else:
-        return cPickle.dump(obj, f)
+    pickle.dump(obj, f)
+    # if six.PY3:
+    #     return cPickle.dump(obj, f, protocol=2)
+    # else:
+    #     return cPickle.dump(obj, f)
 
 
 def if_use_feat(caption_model):
@@ -92,6 +98,7 @@ class RewardCriterion(nn.Module):
         reward = to_contiguous(reward).view(-1)
         mask = (seq>0).float()
         mask = to_contiguous(torch.cat([mask.new(mask.size(0), 1).fill_(1), mask[:, :-1]], 1)).view(-1)
+        # print(f'input: {input}\n\n reward: {reward}\n\n mask: {mask}')
         output = - input * reward * mask
         output = torch.sum(output) / torch.sum(mask)
 
@@ -102,6 +109,7 @@ class LanguageModelCriterion(nn.Module):
         super(LanguageModelCriterion, self).__init__()
 
     def forward(self, input, target, mask):
+        # print('-------CrossEntropy-------')
         # truncate to the same size
         target = target[:, :input.size(1)]
         mask =  mask[:, :input.size(1)]
@@ -115,6 +123,7 @@ class LabelSmoothing(nn.Module):
     "Implement label smoothing."
     def __init__(self, size=0, padding_idx=0, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
+        logger.info('LabelSmoothing __init__')
         self.criterion = nn.KLDivLoss(size_average=False, reduce=False)
         # self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
@@ -123,6 +132,7 @@ class LabelSmoothing(nn.Module):
         self.true_dist = None
         
     def forward(self, input, target, mask):
+        # logger.info('-------LabelSmoothing-------')
         # truncate to the same size
         target = target[:, :input.size(1)]
         mask =  mask[:, :input.size(1)]
@@ -153,8 +163,10 @@ def get_lr(optimizer):
 
 def clip_gradient(optimizer, grad_clip):
     for group in optimizer.param_groups:
+        cnt = 0
         for param in group['params']:
-            param.grad.data.clamp_(-grad_clip, grad_clip)
+            if param.grad is not None:
+                param.grad.data.clamp_(-grad_clip, grad_clip)
 
 def build_optimizer(params, opt):
     if opt.optim == 'rmsprop':
@@ -278,4 +290,40 @@ def get_std_opt(model, factor=1, warmup=2000):
     #         torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
     return NoamOpt(model.model.tgt_embed[0].d_model, factor, warmup,
             torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+import datetime
+
+def get_logger(model_name, log_path='logs/'):
+    """
+    :param log_path
+    :return: logger instance
+    """
+
+    if not os.path.exists(log_path):
+        os.mkdir(log_path)
+
+    log_path = os.path.join(log_path, model_name)    
+    if not os.path.exists(log_path):
+        os.mkdir(log_path)
+    logger = logging.getLogger()
+    date_format = '%Y-%m-%d %H:%M:%S'
+    formatter = logging.Formatter('[%(levelname)s|%(filename)s:%(lineno)s] %(asctime)s %(message)s', date_format)
+    i = 0
+    today = datetime.datetime.now()
+    name = 'log-'+today.strftime('%Y%m%d')+'-'+'%02d'%i+'.log'
+    while os.path.exists(os.path.join(log_path, name)):
+        i += 1
+        name = 'log-'+today.strftime('%Y%m%d')+'-'+'%02d'%i+'.log'
     
+    fileHandler = logging.FileHandler(os.path.join(log_path, name))
+    streamHandler = logging.StreamHandler()
+    
+    fileHandler.setFormatter(formatter)
+    streamHandler.setFormatter(formatter)
+    
+    logger.addHandler(fileHandler)
+    logger.addHandler(streamHandler)
+    
+    logger.setLevel(logging.INFO)
+    logger.info('Writing logs at {}'.format(os.path.join(log_path, name)))
+    return logger, os.path.join(log_path, name)

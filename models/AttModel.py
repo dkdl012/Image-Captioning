@@ -98,10 +98,28 @@ class AttModel(CaptionModel):
 
     def clip_att(self, att_feats, att_masks):
         # Clip the length of att_masks and att_feats to the maximum length
-        if att_masks is not None:
-            max_len = att_masks.data.long().sum(1).max()
-            att_feats = att_feats[:, :max_len].contiguous()
-            att_masks = att_masks[:, :max_len].contiguous()
+        if self.opt.num_cnn==2:
+            try:
+                a_att, b_att = att_feats
+            except:
+                print('att_feats : ', att_feats)
+                print('att_feats shape : ', att_feats.shape)
+            a_mask, b_mask = att_masks
+            if a_mask is not None:
+                a_max_len = a_mask.data.long().sum(1).max()
+                a_att = a_att[:, :a_max_len].contiguous()
+                a_mask = a_mask[:, :a_max_len].contiguous()
+            if b_mask is not None:
+                b_max_len = b_mask.data.long().sum(1).max()
+                b_att = b_att[:, :b_max_len].contiguous()
+                b_mask = b_mask[:, :b_max_len].contiguous()
+            att_feats = [a_att, b_att]
+            att_masks = [a_mask, b_mask]
+        else:
+            if att_masks is not None:
+                max_len = att_masks.data.long().sum(1).max()
+                att_feats = att_feats[:, :max_len].contiguous()
+                att_masks = att_masks[:, :max_len].contiguous()
         return att_feats, att_masks
 
     def _prepare_feature(self, fc_feats, att_feats, att_masks):
@@ -175,9 +193,30 @@ class AttModel(CaptionModel):
         for k in range(batch_size):
             state = self.init_hidden(beam_size)
             tmp_fc_feats = p_fc_feats[k:k+1].expand(beam_size, p_fc_feats.size(1))
-            tmp_att_feats = p_att_feats[k:k+1].expand(*((beam_size,)+p_att_feats.size()[1:])).contiguous()
-            tmp_p_att_feats = pp_att_feats[k:k+1].expand(*((beam_size,)+pp_att_feats.size()[1:])).contiguous()
-            tmp_att_masks = p_att_masks[k:k+1].expand(*((beam_size,)+p_att_masks.size()[1:])).contiguous() if att_masks is not None else None
+            if self.opt.num_cnn==2:
+                a_att_feats, b_att_feats = p_att_feats
+                a_att_feats = a_att_feats[k:k+1].expand(*((beam_size,)+a_att_feats.size()[1:])).contiguous()
+                b_att_feats = b_att_feats[k:k+1].expand(*((beam_size,)+b_att_feats.size()[1:])).contiguous()
+                tmp_att_feats = [a_att_feats, b_att_feats]
+            else:
+                tmp_att_feats = p_att_feats[k:k+1].expand(*((beam_size,)+p_att_feats.size()[1:])).contiguous()
+            
+            if self.opt.num_cnn==2:
+                a_att_feats, b_att_feats = pp_att_feats
+                a_att_feats = a_att_feats[k:k+1].expand(*((beam_size,)+a_att_feats.size()[1:])).contiguous()
+                b_att_feats = b_att_feats[k:k+1].expand(*((beam_size,)+b_att_feats.size()[1:])).contiguous()
+                tmp_p_att_feats = [a_att_feats, b_att_feats]
+            else:
+                tmp_p_att_feats = pp_att_feats[k:k+1].expand(*((beam_size,)+pp_att_feats.size()[1:])).contiguous()
+            
+            
+            if self.opt.num_cnn==2:
+                a_att_masks, b_att_masks = p_att_masks
+                a_att_masks = a_att_masks[k:k+1].expand(*((beam_size,)+a_att_masks.size()[1:])).contiguous() if att_masks[0] is not None else None
+                b_att_masks = b_att_masks[k:k+1].expand(*((beam_size,)+b_att_masks.size()[1:])).contiguous() if att_masks[0] is not None else None
+                tmp_att_masks = [a_att_masks, b_att_masks]
+            else:
+                tmp_att_masks = p_att_masks[k:k+1].expand(*((beam_size,)+p_att_masks.size()[1:])).contiguous() if att_masks is not None else None
 
             for t in range(1):
                 if t == 0: # input <bos>
@@ -215,6 +254,8 @@ class AttModel(CaptionModel):
             if t == 0: # input <bos>
                 it = fc_feats.new_zeros(batch_size, dtype=torch.long)
 
+            # logprobs: after softmax --> probability
+            # state: 
             logprobs, state = self.get_logprobs_state(it, p_fc_feats, p_att_feats, pp_att_feats, p_att_masks, state)
             
             if decoding_constraint and t > 0:

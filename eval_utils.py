@@ -15,6 +15,9 @@ import os
 import sys
 import misc.utils as utils
 
+import logging
+logger = logging.getLogger()
+
 bad_endings = ['a','an','the','in','for','at','of','with','before','after','on','upon','near','to','is','are','am']
 bad_endings += ['the']
 
@@ -29,7 +32,8 @@ def language_eval(dataset, preds, model_id, split):
     import sys
     sys.path.append("coco-caption")
     if 'coco' in dataset:
-        annFile = 'coco-caption/annotations/captions_val2014.json'
+        # annFile = 'coco-caption/annotations/captions_val2014.json'
+        annFile = '../data/annotations/captions_val2014.json'
     elif 'flickr30k' in dataset or 'f30k' in dataset:
         annFile = 'coco-caption/f30k_captions4eval.json'
     from pycocotools.coco import COCO
@@ -46,7 +50,7 @@ def language_eval(dataset, preds, model_id, split):
 
     # filter results to only those in MSCOCO validation set (will be about a third)
     preds_filt = [p for p in preds if p['image_id'] in valids]
-    print('using %d/%d predictions' % (len(preds_filt), len(preds)))
+    logger.info('using %d/%d predictions' % (len(preds_filt), len(preds)))
     json.dump(preds_filt, open(cache_path, 'w')) # serialize to temporary json file. Sigh, COCO API...
 
     cocoRes = coco.loadRes(cache_path)
@@ -80,14 +84,17 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     lang_eval = eval_kwargs.get('language_eval', 0)
     dataset = eval_kwargs.get('dataset', 'coco')
     beam_size = eval_kwargs.get('beam_size', 1)
+    num_cnn = eval_kwargs.get('num_cnn', 1)
+    use_mrc_feat = eval_kwargs.get('use_mrc_feat', 0)
     remove_bad_endings = eval_kwargs.get('remove_bad_endings', 0)
+    frc_first = eval_kwargs.get('frc_first', 1)
     os.environ["REMOVE_BAD_ENDINGS"] = str(remove_bad_endings) # Use this nasty way to make other code clean since it's a global configuration
 
     # Make sure in the evaluation mode
     model.eval()
 
     loader.reset_iterator(split)
-
+    # print('num_cnn={}, frc_first={}'.format(num_cnn, frc_first))
     n = 0
     loss = 0
     loss_sum = 0
@@ -99,12 +106,27 @@ def eval_split(model, crit, loader, eval_kwargs={}):
 
         if data.get('labels', None) is not None and verbose_loss:
             # forward the model to get loss
-            tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
+            tmp = [data['fc_feats'], data['att_feats'], data['mrc_att_feats'], data['labels'], data['masks'], data['att_masks'], data['mrc_att_masks']]
             tmp = [_.cuda() if _ is not None else _ for _ in tmp]
-            fc_feats, att_feats, labels, masks, att_masks = tmp
+            fc_feats, att_feats, mrc_att_feats, labels, masks, att_masks, mrc_att_masks = tmp
 
+            if num_cnn==2:
+                if frc_first:
+                    att_feats_ = [att_feats, mrc_att_feats]
+                    att_masks_ = [att_masks, mrc_att_masks]
+                else:
+                    att_feats_ = [mrc_att_feats, att_feats]
+                    att_masks_ = [mrc_att_masks, att_masks]
+            else:
+                if use_mrc_feat:
+                    att_feats_ = mrc_att_feats
+                    att_masks_ = mrc_att_masks
+                else:
+                    att_feats_ = att_feats
+                    att_masks_ = att_masks
+            
             with torch.no_grad():
-                loss = crit(model(fc_feats, att_feats, labels, att_masks), labels[:,1:], masks[:,1:]).item()
+                loss = crit(model(fc_feats, att_feats_, labels, att_masks_), labels[:,1:], masks[:,1:]).item()
             loss_sum = loss_sum + loss
             loss_evals = loss_evals + 1
 
@@ -112,18 +134,34 @@ def eval_split(model, crit, loader, eval_kwargs={}):
         # Only leave one feature for each image, in case duplicate sample
         tmp = [data['fc_feats'][np.arange(loader.batch_size) * loader.seq_per_img], 
             data['att_feats'][np.arange(loader.batch_size) * loader.seq_per_img],
-            data['att_masks'][np.arange(loader.batch_size) * loader.seq_per_img] if data['att_masks'] is not None else None]
+            data['mrc_att_feats'][np.arange(loader.batch_size) * loader.seq_per_img] if use_mrc_feat else None,
+            data['att_masks'][np.arange(loader.batch_size) * loader.seq_per_img] if data['att_masks'] is not None else None,
+            data['mrc_att_masks'][np.arange(loader.batch_size) * loader.seq_per_img] if data['mrc_att_masks'] is not None else None]
         tmp = [_.cuda() if _ is not None else _ for _ in tmp]
-        fc_feats, att_feats, att_masks = tmp
+        fc_feats, att_feats, mrc_att_feats, att_masks, mrc_att_masks = tmp
+        if num_cnn==2:
+            if frc_first:
+                att_feats_ = [att_feats, mrc_att_feats]
+                att_masks_ = [att_masks, mrc_att_masks]
+            else:
+                att_feats_ = [mrc_att_feats, att_feats]
+                att_masks_ = [mrc_att_masks, att_masks]
+        else:
+            if use_mrc_feat:
+                att_feats_ = mrc_att_feats
+                att_masks_ = mrc_att_masks
+            else:
+                att_feats_ = att_feats
+                att_masks_ = att_masks
+
         # forward the model to also get generated samples for each image
         with torch.no_grad():
-            seq = model(fc_feats, att_feats, att_masks, opt=eval_kwargs, mode='sample')[0].data
-        
+            seq = model(fc_feats, att_feats_, att_masks_, opt=eval_kwargs, mode='sample')[0].data
         # Print beam search
         if beam_size > 1 and verbose_beam:
             for i in range(loader.batch_size):
-                print('\n'.join([utils.decode_sequence(loader.get_vocab(), _['seq'].unsqueeze(0))[0] for _ in model.done_beams[i]]))
-                print('--' * 10)
+                logger.info('\n'.join([utils.decode_sequence(loader.get_vocab(), _['seq'].unsqueeze(0))[0] for _ in model.done_beams[i]]))
+                logger.info('--' * 10)
         sents = utils.decode_sequence(loader.get_vocab(), seq)
 
         for k, sent in enumerate(sents):
@@ -134,11 +172,11 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             if eval_kwargs.get('dump_images', 0) == 1:
                 # dump the raw image to vis/ folder
                 cmd = 'cp "' + os.path.join(eval_kwargs['image_root'], data['infos'][k]['file_path']) + '" vis/imgs/img' + str(len(predictions)) + '.jpg' # bit gross
-                print(cmd)
+                logger.info(cmd)
                 os.system(cmd)
 
             if verbose:
-                print('image %s: %s' %(entry['image_id'], entry['caption']))
+                logger.info('image %s: %s' %(entry['image_id'], entry['caption']))
 
         # if we wrapped around the split or used up val imgs budget then bail
         ix0 = data['bounds']['it_pos_now']
@@ -149,7 +187,7 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             predictions.pop()
 
         if verbose:
-            print('evaluating validation preformance... %d/%d (%f)' %(ix0 - 1, ix1, loss))
+            logger.info('evaluating validation preformance... %d/%d (%f)' %(ix0 - 1, ix1, loss))
 
         if data['bounds']['wrapped']:
             break

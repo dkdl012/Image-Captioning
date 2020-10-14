@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import misc.utils as utils
+from torchvision import models
 
 import copy
 import math
@@ -28,9 +29,10 @@ class EncoderDecoder(nn.Module):
     A standard Encoder-Decoder architecture. Base for this and many 
     other models.
     """
-    def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
+    def __init__(self, encoder, encoder_m, decoder, src_embed, tgt_embed, generator):
         super(EncoderDecoder, self).__init__()
         self.encoder = encoder
+        self.encoder_m = encoder_m
         self.decoder = decoder
         self.src_embed = src_embed
         self.tgt_embed = tgt_embed
@@ -38,10 +40,15 @@ class EncoderDecoder(nn.Module):
         
     def forward(self, src, tgt, src_mask, tgt_mask):
         "Take in and process masked src and target sequences."
+        if len(src)==2:
+            src_ = [self.encode(src[0], src_mask[0]), self.encode(src[1], src_mask[1], 'm')]
+            return self.decode(src_, src_mask, tgt, tgt_mask)
         return self.decode(self.encode(src, src_mask), src_mask,
                             tgt, tgt_mask)
     
-    def encode(self, src, src_mask):
+    def encode(self, src, src_mask, enc_type=None):
+        if enc_type=='m':
+            return self.encoder_m(self.src_embed(src), src_mask)
         return self.encoder(self.src_embed(src), src_mask)
     
     def decode(self, memory, src_mask, tgt, tgt_mask):
@@ -128,20 +135,41 @@ class Decoder(nn.Module):
 
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
-    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+    def __init__(self, size, self_attn, src_attn, src_attn_m, feed_forward, dropout, add_self, num_cnn):
         super(DecoderLayer, self).__init__()
         self.size = size
         self.self_attn = self_attn
         self.src_attn = src_attn
+        self.src_attn_m = src_attn_m
         self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 3)
+        self.add_self = add_self
+        self.num_cnn = num_cnn
+        if self.add_self: # tgt_attn + src_attn + tgt_attn
+            layer_num = 4
+            if self.num_cnn==2: # tgt_attn + src_attn + src_attn + tgt_attn
+                layer_num = 5
+        else: # tgt_attn + src_attn 
+            layer_num = 3
+            if self.num_cnn==2: # tgt_attn + src_attn + src_attn
+                layer_num = 4
+        self.sublayer = clones(SublayerConnection(size, dropout), layer_num)
  
     def forward(self, x, memory, src_mask, tgt_mask):
         "Follow Figure 1 (right) for connections."
-        m = memory
         x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
-        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
-        return self.sublayer[2](x, self.feed_forward)
+
+        if self.num_cnn==2:
+            m1, m2 = memory
+            src_mask1, src_mask2 = src_mask
+            x = self.sublayer[1](x, lambda x: self.src_attn(x, m1, m1, src_mask1))
+            x = self.sublayer[2](x, lambda x: self.src_attn_m(x, m2, m2, src_mask2))
+        else:
+            m = memory
+            x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
+        
+        if self.add_self:
+            x = self.sublayer[-2](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+        return self.sublayer[-1](x, self.feed_forward)
 
 def subsequent_mask(size):
     "Mask out subsequent positions."
@@ -243,13 +271,25 @@ class TransformerModel(AttModel):
         attn = MultiHeadedAttention(h, d_model)
         ff = PositionwiseFeedForward(d_model, d_ff, dropout)
         position = PositionalEncoding(d_model, dropout)
-        model = EncoderDecoder(
-            Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
-            Decoder(DecoderLayer(d_model, c(attn), c(attn), 
-                                 c(ff), dropout), N),
-            lambda x:x, # nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
-            nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
-            Generator(d_model, tgt_vocab))
+        encoder = Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N)
+        if self.opt.num_cnn==2:
+            model = EncoderDecoder(
+                encoder,
+                c(encoder),
+                Decoder(DecoderLayer(d_model, c(attn), c(attn), c(attn),
+                                    c(ff), dropout, self.opt.add_self, self.opt.num_cnn), N),
+                lambda x:x, # nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
+                nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
+                Generator(d_model, tgt_vocab))
+        else:
+            model = EncoderDecoder(
+                Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+                None, 
+                Decoder(DecoderLayer(d_model, c(attn), c(attn), None,
+                                    c(ff), dropout, self.opt.add_self, self.opt.num_cnn), N),
+                lambda x:x, # nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
+                nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
+                Generator(d_model, tgt_vocab))
         
         # This was important from their code. 
         # Initialize parameters with Glorot / fan_avg.
@@ -258,6 +298,12 @@ class TransformerModel(AttModel):
                 nn.init.xavier_uniform_(p)
         return model
 
+    def param_init_xavier(self, m):
+        for p in m.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+        return m
+
     def __init__(self, opt):
         super(TransformerModel, self).__init__(opt)
         self.opt = opt
@@ -265,13 +311,27 @@ class TransformerModel(AttModel):
         # d_model = self.input_encoding_size # 512
 
         delattr(self, 'att_embed')
+
         self.att_embed = nn.Sequential(*(
                                     ((nn.BatchNorm1d(self.att_feat_size),) if self.use_bn else ())+
                                     (nn.Linear(self.att_feat_size, self.input_encoding_size),
-                                    nn.ReLU(),
+                                    nn.LeakyReLU(),
                                     nn.Dropout(self.drop_prob_lm))+
                                     ((nn.BatchNorm1d(self.input_encoding_size),) if self.use_bn==2 else ())))
         
+        self.mrc_att_embed = nn.Sequential(*(
+                                    ((nn.BatchNorm1d(self.opt.mrc_att_feat_size),) if self.use_bn else ())+
+                                    (nn.Linear(self.opt.mrc_att_feat_size, self.att_feat_size),
+                                    nn.LeakyReLU(),
+                                    nn.Linear(self.opt.att_feat_size, self.input_encoding_size),
+                                    nn.LeakyReLU(),
+                                    nn.Dropout(self.drop_prob_lm))+
+                                    ((nn.BatchNorm1d(self.input_encoding_size),) if self.use_bn==2 else ())))
+        
+        # print('att_embed : ', self.att_embed)
+        # print('mrc_att_embed : ', self.mrc_att_embed)
+        # self.att_embed = self.param_init_xavier(self.att_embed)
+        # self.mrc_att_embed = self.param_init_xavier(self.mrc_att_embed)
         delattr(self, 'embed')
         self.embed = lambda x : x
         delattr(self, 'fc_embed')
@@ -294,35 +354,79 @@ class TransformerModel(AttModel):
     def _prepare_feature(self, fc_feats, att_feats, att_masks):
 
         att_feats, seq, att_masks, seq_mask = self._prepare_feature_forward(att_feats, att_masks)
+        if self.opt.num_cnn==2:
+            m1 = self.model.encode(att_feats[0], att_masks[0])
+            m2 = self.model.encode(att_feats[1], att_masks[1], 'm')
+            memory = [m1, m2]
+            att_feats_ = [att_feats[0][...,:1], att_feats[1][...,:1]]
+            return fc_feats[...,:1], att_feats_, memory, att_masks
         memory = self.model.encode(att_feats, att_masks)
-
         return fc_feats[...,:1], att_feats[...,:1], memory, att_masks
 
     def _prepare_feature_forward(self, att_feats, att_masks=None, seq=None):
         att_feats, att_masks = self.clip_att(att_feats, att_masks)
+        # print('In prefeat frc att_feats : ', att_feats[0][0][0])
+        # print('In prefeat mrc att_feats : ', att_feats[1][0][0])
+        def cal_rate(a, ab, rc):
+            a_s = (a==0).sum().item() 
+            a_t = a.shape[0]*a.shape[1]*a.shape[2]
+            r = a_s/a_t
+            # print(f'In prefeat {ab} pack_warapper {rc} zero count : ', a_s, a_t, r)
 
-        att_feats = pack_wrapper(self.att_embed, att_feats, att_masks)
+        if self.opt.num_cnn==2:
+            a_att, b_att = att_feats
+            a_mask, b_mask = att_masks
+            # print('Before pack_wrapper frc : {}, mrc : {}'.format(a_att.shape, b_att.shape))
+            # cal_rate(a_att, 'before', 'frc')
+            # cal_rate(b_att, 'before', 'mrc')
+            a_att = pack_wrapper(self.att_embed if a_att.shape[-1]==2048 else self.mrc_att_embed, a_att, a_mask)
+            b_att = pack_wrapper(self.mrc_att_embed if b_att.shape[-1]==4096 else self.att_embed, b_att, b_mask)
+            # cal_rate(a_att, 'after', 'frc')
+            # print('In prefeat after pack_warapper frc att_feats : ', a_att.shape, a_att[0,:,0])
+            # cal_rate(b_att, 'after', 'mrc')
+            # print('In prefeat after pack_warapper mrc att_feats : ', b_att.shape, b_att[0,:,0])
+            if a_mask is None:
+                a_mask = a_att.new_ones(a_att.shape[:2], dtype=torch.long)
+            if b_mask is None:
+                b_mask = b_att.new_ones(b_att.shape[:2], dtype=torch.long)
+            a_mask = a_mask.unsqueeze(-2)
+            b_mask = b_mask.unsqueeze(-2)
+            att_feats = [a_att, b_att]
+            att_masks = [a_mask, b_mask]
+        else:
+            if self.opt.use_mrc_feat:    
+                att_feats = pack_wrapper(self.mrc_att_embed, att_feats, att_masks)
+            else:
+                att_feats = pack_wrapper(self.att_embed, att_feats, att_masks)
 
-        if att_masks is None:
-            att_masks = att_feats.new_ones(att_feats.shape[:2], dtype=torch.long)
-        att_masks = att_masks.unsqueeze(-2)
+
+            if att_masks is None:
+                att_masks = att_feats.new_ones(att_feats.shape[:2], dtype=torch.long)
+            att_masks = att_masks.unsqueeze(-2)
 
         if seq is not None:
             # crop the last one
             seq = seq[:,:-1]
             seq_mask = (seq.data > 0)
-            seq_mask[:,0] += 1
+            # print('seq_mask: ', seq_mask)
+            # seq_mask[:,0] += 1
 
             seq_mask = seq_mask.unsqueeze(-2)
             seq_mask = seq_mask & subsequent_mask(seq.size(-1)).to(seq_mask)
         else:
             seq_mask = None
-
+        # print('In final prefeat frc att_feats : ', att_feats[0][0][0])
+        # print('In final prefeat mrc att_feats : ', att_feats[1][0][0])
         return att_feats, seq, att_masks, seq_mask
 
     def _forward(self, fc_feats, att_feats, seq, att_masks=None):
+        # if self.opt.num_cnn==2:
+            # print('Before prefeat frc att_feats : ', att_feats[0][0,:,0].shape, att_feats[0][0,:,0])
+            # print('Before prefeat mrc att_feats : ', att_feats[1][0,:,0].shape, att_feats[1][0,:,0])
         att_feats, seq, att_masks, seq_mask = self._prepare_feature_forward(att_feats, att_masks, seq)
-
+        # print('After prefeat frc att_feats : ', att_feats[0].shape)
+        # print('After mrc att_feats : ', att_feats[1].shape)
+        
         out = self.model(att_feats, seq, att_masks, seq_mask)
 
         outputs = self.model.generator(out)
@@ -337,8 +441,9 @@ class TransformerModel(AttModel):
             ys = it.unsqueeze(1)
         else:
             ys = torch.cat([state[0][0], it.unsqueeze(1)], dim=1)
+            
         out = self.model.decode(memory, mask, 
                                ys, 
                                subsequent_mask(ys.size(1))
-                                        .to(memory.device))
+                                        .to(memory.device if self.opt.num_cnn==1 else memory[0].device))
         return out[:, -1], [ys.unsqueeze(0)]

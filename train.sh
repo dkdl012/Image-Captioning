@@ -1,13 +1,17 @@
-id="aoanet"
+id="Transformer_mrc_frc"
 if [ ! -f log/log_$id/infos_$id.pkl ]; then
 start_from=""
 else
 start_from="--start_from log/log_$id"
 fi
 python train.py --id $id \
-    --caption_model aoa \
-    --refine 1 \
-    --refine_aoa 1 \
+    --caption_model transformer \
+    --add_self 1 \
+    --use_mrc_feat 1 \
+    --num_cnn 2 \
+    --frc_first 0 \
+    --refine 0 \
+    --refine_aoa 0 \
     --use_ff 0 \
     --decoder_type AoA \
     --use_multi_head 2 \
@@ -42,9 +46,13 @@ python train.py --id $id \
     --learning_rate_decay_every 3
 
 python train.py --id $id \
-    --caption_model aoa \
-    --refine 1 \
-    --refine_aoa 1 \
+    --caption_model transformer \
+    --add_self 1 \
+    --use_mrc_feat 1 \
+    --num_cnn 2 \
+    --frc_first 0 \
+    --refine 0 \
+    --refine_aoa 0 \
     --use_ff 0 \
     --decoder_type AoA \
     --use_multi_head 2 \

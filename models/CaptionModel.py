@@ -109,6 +109,7 @@ class CaptionModel(nn.Module):
         remove_bad_endings = opt.get('remove_bad_endings', 0)
         length_penalty = utils.penalty_builder(opt.get('length_penalty', ''))
         bdash = beam_size // group_size # beam per group
+        num_cnn = opt.get('num_cnn', 1)
 
         # INITIALIZATIONS
         beam_seq_table = [torch.LongTensor(self.seq_length, bdash).zero_() for _ in range(group_size)]
@@ -124,12 +125,30 @@ class CaptionModel(nn.Module):
 
         # Chunk elements in the args
         args = list(args)
+        if num_cnn==2:
+            args_ = []
+            args_.append(args[0])
+            args_.append(args[1][0])
+            args_.append(args[1][1])
+            args_.append(args[2][0])
+            args_.append(args[2][1])
+            args_.append(args[3][0])
+            args_.append(args[3][1])
+            args = args_
+
         if self.__class__.__name__ == 'AttEnsemble':
             args = [[_.chunk(group_size) if _ is not None else [None]*group_size for _ in args_] for args_ in args] # arg_name, model_name, group_name
             args = [[[args[j][i][k] for i in range(len(self.models))] for j in range(len(args))] for k in range(group_size)] # group_name, arg_name, model_name
         else:
             args = [_.chunk(group_size) if _ is not None else [None]*group_size for _ in args]
             args = [[args[i][j] for i in range(len(args))] for j in range(group_size)]
+            if num_cnn==2:
+                args_ = []
+                args_.append(args[0][0])
+                args_.append([args[0][1], args[0][2]])
+                args_.append([args[0][3], args[0][4]])
+                args_.append([args[0][5], args[0][6]])
+                args = [args_]
 
         for t in range(self.seq_length + group_size - 1):
             for divm in range(group_size): 
@@ -206,9 +225,12 @@ class CaptionModel(nn.Module):
             sampleLogprobs = logprobs.gather(1, it.unsqueeze(1)) # gather the logprobs at sampled positions
         else:
             logprobs = logprobs / temperature
+            # print(f'----sample_method: {sample_method}----')
             if sample_method.startswith('top'): # topk sampling
+                # print('work 1')
                 top_num = float(sample_method[3:])
                 if 0 < top_num < 1:
+                    # print('work 2')
                     # nucleus sampling from # The Curious Case of Neural Text Degeneration
                     probs = F.softmax(logprobs, dim=1)
                     sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=1)
@@ -219,11 +241,17 @@ class CaptionModel(nn.Module):
                     sorted_probs = sorted_probs / sorted_probs.sum(1, keepdim=True)
                     logprobs.scatter_(1, sorted_indices, sorted_probs.log())
                 else:
+                    # print('work 3')
                     the_k = int(top_num)
                     tmp = torch.empty_like(logprobs).fill_(float('-inf'))
                     topk, indices = torch.topk(logprobs, the_k, dim=1)
                     tmp = tmp.scatter(1, indices, topk)
                     logprobs = tmp
+            # print('work 4')
+            # print(f'------logprobs shape {logprobs.shape}-------')
+            # print(f'------logprobs = {logprobs}')
+            # role of argmax?
             it = torch.distributions.Categorical(logits=logprobs.detach()).sample()
+            # print(f'------it = {it.shape}')
             sampleLogprobs = logprobs.gather(1, it.unsqueeze(1)) # gather the logprobs at sampled positions
         return it, sampleLogprobs

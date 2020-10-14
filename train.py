@@ -113,7 +113,7 @@ def train(opt):
             os.makedirs(opt.checkpoint_path)
         checkpoint_path = os.path.join(opt.checkpoint_path, 'model%s.pth' %(append))
         torch.save(model.state_dict(), checkpoint_path)
-        print("model saved to {}".format(checkpoint_path))
+        logger.info("model saved to {}".format(checkpoint_path))
         optimizer_path = os.path.join(opt.checkpoint_path, 'optimizer%s.pth' %(append))
         torch.save(optimizer.state_dict(), optimizer_path)
         with open(os.path.join(opt.checkpoint_path, 'infos_'+opt.id+'%s.pkl' %(append)), 'wb') as f:
@@ -141,11 +141,12 @@ def train(opt):
                     model.ss_prob = opt.ss_prob
 
                 # If start self critical training
+                logger.info('------self_critical_after:{}------'.format(opt.self_critical_after))
                 if opt.self_critical_after != -1 and epoch >= opt.self_critical_after:
-                    sc_flag = True
+                    sc_flag = True # use RewardCriterion
                     init_scorer(opt.cached_tokens)
                 else:
-                    sc_flag = False
+                    sc_flag = False # use CrossEntropyLoss
 
                 epoch_done = False
             
@@ -155,35 +156,55 @@ def train(opt):
                 utils.set_lr(optimizer, opt.current_lr)
             # Load data from train split (0)
             data = loader.get_batch('train')
-            print('Read data:', time.time() - start)
+            # if iteration % 1000 == 0:
+            #     logger.info('Read data:', time.time() - start)
 
             if (iteration % acc_steps == 0):
                 optimizer.zero_grad()
             
             torch.cuda.synchronize()
             start = time.time()
-            tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
+            # print('data[att_feats] : ', data['att_feats'].shape)
+            tmp = [data['fc_feats'], data['att_feats'], data['mrc_att_feats'], data['labels'], data['masks'], data['att_masks'], data['mrc_att_masks']]
             tmp = [_ if _ is None else _.cuda() for _ in tmp]
-            fc_feats, att_feats, labels, masks, att_masks = tmp
+            fc_feats, att_feats, mrc_att_feats, labels, masks, att_masks, mrc_att_masks = tmp
 
-            model_out = dp_lw_model(fc_feats, att_feats, labels, masks, att_masks, data['gts'], torch.arange(0, len(data['gts'])), sc_flag)
-
+            if opt.num_cnn==2:
+                if opt.frc_first:
+                    att_feats_ = [att_feats, mrc_att_feats]
+                    att_masks_ = [att_masks, mrc_att_masks]
+                else:
+                    att_feats_ = [mrc_att_feats, att_feats]
+                    att_masks_ = [mrc_att_masks, att_masks]
+            else:
+                if opt.use_mrc_feat:
+                    att_feats_ = mrc_att_feats
+                    att_masks_ = mrc_att_masks
+                else:
+                    att_feats_ = att_feats
+                    att_masks_ = att_masks
+            
+            
+            model_out = dp_lw_model(fc_feats, att_feats_, labels, masks, att_masks_, data['gts'], torch.arange(0, len(data['gts'])), sc_flag, iteration)
+            
             loss = model_out['loss'].mean()
             loss_sp = loss / acc_steps
 
             loss_sp.backward()
             if ((iteration+1) % acc_steps == 0):
+                # print('optimizer.param_groups : {}'.format(optimizer.param_groups[0]['params'][0].grad.data))
                 utils.clip_gradient(optimizer, opt.grad_clip)
                 optimizer.step()
             torch.cuda.synchronize()
             train_loss = loss.item()
             end = time.time()
-            if not sc_flag:
-                print("iter {} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}" \
+            if not sc_flag and iteration % 100 == 0:
+                logger.info("iter {} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}" \
                     .format(iteration, epoch, train_loss, end - start))
             else:
-                print("iter {} (epoch {}), avg_reward = {:.3f}, time/batch = {:.3f}" \
-                    .format(iteration, epoch, model_out['reward'].mean(), end - start))
+                if iteration % 100 == 0:
+                    logger.info("iter {} (epoch {}), avg_reward = {:.3f}, time/batch = {:.3f}" \
+                        .format(iteration, epoch, model_out['reward'].mean(), end - start))
 
             # Update the iteration and epoch
             iteration += 1
@@ -215,10 +236,11 @@ def train(opt):
             
             # make evaluation on validation set, and save model
             if (iteration % opt.save_checkpoint_every == 0):
+            # if 1:
                 # eval model
                 eval_kwargs = {'split': 'val',
                                 'dataset': opt.input_json}
-                eval_kwargs.update(vars(opt))
+                eval_kwargs.update(vars(opt))                
                 val_loss, predictions, lang_stats = eval_utils.eval_split(
                     dp_model, lw_model.crit, loader, eval_kwargs)
 
@@ -259,17 +281,21 @@ def train(opt):
 
                 if best_flag:
                     save_checkpoint(model, infos, optimizer, append='best')
-
+            # break
             # Stop if reaching max epochs
             if epoch >= opt.max_epochs and opt.max_epochs != -1:
                 break
     except (RuntimeError, KeyboardInterrupt):
-        print('Save ckpt on exception ...')
+        logger.info('Save ckpt on exception ...')
         save_checkpoint(model, infos, optimizer)
-        print('Save ckpt done.')
+        logger.info('Save ckpt done.')
         stack_trace = traceback.format_exc()
-        print(stack_trace)
+        logger.info(stack_trace)
 
 
 opt = opts.parse_opt()
+logger, log_dir = utils.get_logger(model_name=opt.id, log_path='train_logs')
+logger.info('train logs saved at {}'.format(log_dir))
+logger.info('------initial self_critical_after:{}------'.format(opt.self_critical_after))
 train(opt)
+logger.info('----Finished Training----\n\n')

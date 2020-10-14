@@ -29,19 +29,19 @@ infiles = ['trainval/karpathy_test_resnet101_faster_rcnn_genome.tsv',
           'trainval/karpathy_train_resnet101_faster_rcnn_genome.tsv.0', \
            'trainval/karpathy_train_resnet101_faster_rcnn_genome.tsv.1']
 
-os.makedirs(args.output_dir+'_att')
-os.makedirs(args.output_dir+'_fc')
-os.makedirs(args.output_dir+'_box')
+os.makedirs(args.output_dir+'_att', exist_ok=True)
+os.makedirs(args.output_dir+'_fc', exist_ok=True)
+os.makedirs(args.output_dir+'_box', exist_ok=True)
 
 for infile in infiles:
     print('Reading ' + infile)
-    with open(os.path.join(args.downloaded_feats, infile), "r+b") as tsv_in_file:
+    with open(os.path.join(args.downloaded_feats, infile), "r") as tsv_in_file:
         reader = csv.DictReader(tsv_in_file, delimiter='\t', fieldnames = FIELDNAMES)
         for item in reader:
             item['image_id'] = int(item['image_id'])
             item['num_boxes'] = int(item['num_boxes'])
             for field in ['boxes', 'features']:
-                item[field] = np.frombuffer(base64.decodestring(item[field]), 
+                item[field] = np.frombuffer(base64.decodestring(bytes(item[field], 'utf-8')), 
                         dtype=np.float32).reshape((item['num_boxes'],-1))
             np.savez_compressed(os.path.join(args.output_dir+'_att', str(item['image_id'])), feat=item['features'])
             np.save(os.path.join(args.output_dir+'_fc', str(item['image_id'])), item['features'].mean(0))

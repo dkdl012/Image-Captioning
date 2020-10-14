@@ -3,12 +3,14 @@ import argparse
 def parse_opt():
     parser = argparse.ArgumentParser()
     # Data input settings
-    parser.add_argument('--input_json', type=str, default='data/coco.json',
+    parser.add_argument('--input_json', type=str, default='data/cocotalk.json',
                     help='path to the json file containing additional info and vocab')
     parser.add_argument('--input_fc_dir', type=str, default='data/cocotalk_fc',
                     help='path to the directory containing the preprocessed fc feats')
     parser.add_argument('--input_att_dir', type=str, default='data/cocotalk_att',
                     help='path to the directory containing the preprocessed att feats')
+    parser.add_argument('--input_mrc_att_dir', type=str, default='data/cocobu_mrc_att',
+                    help='path to the directory containing the preprocessed Mask R-CNN att feats')
     parser.add_argument('--input_box_dir', type=str, default='data/cocotalk_box',
                     help='path to the directory containing the boxes of att feats')
     parser.add_argument('--input_label_h5', type=str, default='data/coco_label.h5',
@@ -40,6 +42,8 @@ def parse_opt():
                     help='2048 for resnet, 4096 for vgg')
     parser.add_argument('--att_feat_size', type=int, default=2048,
                     help='2048 for resnet, 512 for vgg')
+    parser.add_argument('--mrc_att_feat_size', type=int, default=4096,
+                    help='4096 for mask r-cnn, 2048 for fit 2048 feature size')
     parser.add_argument('--logit_layers', type=int, default=1,
                     help='number of layers in the RNN')
 
@@ -149,6 +153,15 @@ def parse_opt():
                     help='How much to update the prob')
     parser.add_argument('--scheduled_sampling_max_prob', type=float, default=0.25, 
                     help='Maximum scheduled sampling prob.')
+    # Added by Jieun
+    parser.add_argument('--add_self', type=int, default=0, 
+                    help='change transformer architecture --> using 3 MHA')
+    parser.add_argument('--use_mrc_feat', type=int, default=0, 
+                    help='If using Mask R-CNN')
+    parser.add_argument('--num_cnn', type=int, default=1, 
+                    help='the number of using cnn')
+    parser.add_argument('--frc_first', type=int, default=1, 
+                    help='order of cnns, default is frc->mrc')
 
 
     # Evaluation/Checkpointing
@@ -261,3 +274,13 @@ def add_eval_options(parser):
                     help='if we need to print out all beam search beams.')
     parser.add_argument('--verbose_loss', type=int, default=0, 
                     help='If calculate loss using ground truth during evaluation')
+
+    # Added by Jieun
+    parser.add_argument('--add_self', type=int, default=0, 
+                    help='change transformer architecture --> using 3 MHA')
+    parser.add_argument('--use_mrc_feat', type=int, default=0, 
+                    help='If using Mask R-CNN')
+    parser.add_argument('--num_cnn', type=int, default=1, 
+                    help='the number of using cnn')
+    parser.add_argument('--frc_first', type=int, default=1, 
+                    help='order of cnns, default is frc->mrc')
